@@ -2,24 +2,19 @@ const express = require('express');
 const fetch = require('node-fetch');
 const router = express.Router();
 
-// 🔑 Key lives safely on server — never in the Flutter app
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-// ── POST /api/ai/parse ──────────────────────────────────────────
-// Flutter app sends: { "text": "logo design for ABC ₹10,000" }
-// Backend calls Gemini and returns parsed invoice data
+// POST /api/ai/parse
 router.post('/parse', async (req, res) => {
   const { text } = req.body;
 
-  // Basic validation
   if (!text || text.trim().length < 3) {
     return res.status(400).json({ error: 'Please provide invoice text' });
   }
 
-  // Check key is configured on server
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_key_here') {
-    return res.status(500).json({ error: 'Gemini API key not configured on server' });
+    return res.status(500).json({ error: 'Gemini API key not configured' });
   }
 
   try {
@@ -31,30 +26,34 @@ router.post('/parse', async (req, res) => {
           {
             parts: [
               {
-                text: `You are an Indian invoice parser.
-Extract invoice details from this text and return ONLY valid JSON, no markdown.
+                text: `You are an invoice data extractor. Extract data from the text below.
 
 Text: "${text}"
 
-Return exactly this JSON:
-{
-  "service": "professional service description",
-  "amount": 10000,
-  "gst_rate": 18
-}
-
 Rules:
-- amount must be a plain number (no ₹ symbol)
-- gst_rate must be one of: 0, 5, 12, 18, 28
-- 18% for most services, 5% for food, 28% for luxury
-- service should be clean and professional`,
+- "amount" = the main price/rate number (just digits, no symbols). Examples:
+    "logo design ₹10000" → amount: 10000
+    "website for ABC Rs 50,000" → amount: 50000
+    "consulting 8000/day" → amount: 8000
+    "design work 15k" → amount: 15000
+- "service" = clean description of the work, remove client name and amount
+- "gst_rate" = 18 for services, 5 for food/restaurant, 28 for luxury/alcohol
+- "client_name" = company or person name if mentioned, else null
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "service": "string",
+  "amount": number,
+  "gst_rate": number,
+  "client_name": "string or null"
+}`,
               },
             ],
           },
         ],
         generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 200,
+          temperature: 0.0,
+          maxOutputTokens: 300,
         },
       }),
     });
@@ -64,11 +63,9 @@ Rules:
     }
 
     const data = await geminiResponse.json();
-
-    // Extract text from Gemini response
     const content = data.candidates[0].content.parts[0].text;
 
-    // Strip accidental markdown backticks
+    // Strip markdown if any
     const clean = content
       .replace(/```json\n?/g, '')
       .replace(/```\n?/g, '')
@@ -76,21 +73,24 @@ Rules:
 
     const parsed = JSON.parse(clean);
 
-    // Validate gst_rate is a valid Indian rate
+    // Validate
     const validRates = [0, 5, 12, 18, 28];
-    if (!validRates.includes(parsed.gst_rate)) {
-      parsed.gst_rate = 18; // default to 18%
-    }
+    if (!validRates.includes(parsed.gst_rate)) parsed.gst_rate = 18;
 
-    // Calculate GST amounts on server side too
-    const subtotal = parsed.amount || 0;
+    // Handle "15k" style that Gemini might return as string
+    let amount = typeof parsed.amount === 'string'
+      ? parseFloat(parsed.amount.replace(/[^0-9.]/g, ''))
+      : (parsed.amount || 0);
+
+    const subtotal = amount;
     const gstAmount = Math.round(subtotal * parsed.gst_rate) / 100;
     const total = subtotal + gstAmount;
 
     return res.json({
       success: true,
       data: {
-        service: parsed.service,
+        service: parsed.service || '',
+        client_name: parsed.client_name || null,
         amount: subtotal,
         gst_rate: parsed.gst_rate,
         gst_amount: gstAmount,
