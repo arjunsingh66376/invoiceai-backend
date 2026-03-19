@@ -27,7 +27,7 @@ async function callGemini(prompt, retries = 2) {
     if (response.status === 429) {
       console.log(`Rate limited (429). Attempt ${attempt}/${retries}. Waiting 5s...`);
       if (attempt < retries) {
-        await wait(5000);
+        await wait(15000);
         continue;
       }
       throw new Error('Gemini error: 429 — rate limit, try again in a moment');
