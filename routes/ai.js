@@ -3,7 +3,9 @@ const fetch = require('node-fetch');
 const router = express.Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+// ✅ Updated to gemini-2.0-flash — works on free tier 2025
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 // POST /api/ai/parse
 router.post('/parse', async (req, res) => {
@@ -31,7 +33,7 @@ router.post('/parse', async (req, res) => {
 Text: "${text}"
 
 Rules:
-- "amount" = the main price/rate number (just digits, no symbols). Examples:
+- "amount" = the main price number (digits only, no symbols). Examples:
     "logo design ₹10000" → amount: 10000
     "website for ABC Rs 50,000" → amount: 50000
     "consulting 8000/day" → amount: 8000
@@ -59,6 +61,8 @@ Return ONLY this JSON (no markdown, no explanation):
     });
 
     if (!geminiResponse.ok) {
+      const errBody = await geminiResponse.text();
+      console.error('Gemini raw error:', errBody);
       throw new Error(`Gemini error: ${geminiResponse.status}`);
     }
 
@@ -73,11 +77,11 @@ Return ONLY this JSON (no markdown, no explanation):
 
     const parsed = JSON.parse(clean);
 
-    // Validate
+    // Validate GST rate
     const validRates = [0, 5, 12, 18, 28];
     if (!validRates.includes(parsed.gst_rate)) parsed.gst_rate = 18;
 
-    // Handle "15k" style that Gemini might return as string
+    // Handle "15k" string amounts
     let amount = typeof parsed.amount === 'string'
       ? parseFloat(parsed.amount.replace(/[^0-9.]/g, ''))
       : (parsed.amount || 0);
