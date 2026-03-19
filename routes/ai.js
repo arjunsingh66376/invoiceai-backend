@@ -3,11 +3,47 @@ const fetch = require('node-fetch');
 const router = express.Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-// ✅ Updated to gemini-2.0-flash — works on free tier 2025
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-// POST /api/ai/parse
+// ── Helper: wait ms milliseconds ───────────────────────────────────
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ── Helper: call Gemini with 1 retry on 429 ───────────────────────
+async function callGemini(prompt, retries = 2) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const response = await fetch(GEMINI_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.0,
+          maxOutputTokens: 300,
+        },
+      }),
+    });
+
+    // ✅ 429 = rate limited — wait 5 seconds and retry
+    if (response.status === 429) {
+      console.log(`Rate limited (429). Attempt ${attempt}/${retries}. Waiting 5s...`);
+      if (attempt < retries) {
+        await wait(5000);
+        continue;
+      }
+      throw new Error('Gemini error: 429 — rate limit, try again in a moment');
+    }
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error('Gemini raw error:', errBody);
+      throw new Error(`Gemini error: ${response.status}`);
+    }
+
+    return response.json();
+  }
+}
+
+// ── POST /api/ai/parse ─────────────────────────────────────────────
 router.post('/parse', async (req, res) => {
   const { text } = req.body;
 
@@ -19,16 +55,7 @@ router.post('/parse', async (req, res) => {
     return res.status(500).json({ error: 'Gemini API key not configured' });
   }
 
-  try {
-    const geminiResponse = await fetch(GEMINI_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: `You are an invoice data extractor. Extract data from the text below.
+  const prompt = `You are an invoice data extractor. Extract data from the text below.
 
 Text: "${text}"
 
@@ -48,25 +75,10 @@ Return ONLY this JSON (no markdown, no explanation):
   "amount": number,
   "gst_rate": number,
   "client_name": "string or null"
-}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.0,
-          maxOutputTokens: 300,
-        },
-      }),
-    });
+}`;
 
-    if (!geminiResponse.ok) {
-      const errBody = await geminiResponse.text();
-      console.error('Gemini raw error:', errBody);
-      throw new Error(`Gemini error: ${geminiResponse.status}`);
-    }
-
-    const data = await geminiResponse.json();
+  try {
+    const data = await callGemini(prompt);
     const content = data.candidates[0].content.parts[0].text;
 
     // Strip markdown if any
@@ -104,6 +116,15 @@ Return ONLY this JSON (no markdown, no explanation):
 
   } catch (err) {
     console.error('AI parse error:', err.message);
+
+    // ✅ Give user friendly message for rate limit
+    if (err.message.includes('429')) {
+      return res.status(429).json({
+        error: 'Too many requests. Please wait a moment and try again.',
+        detail: 'Gemini free tier: 15 requests/minute limit',
+      });
+    }
+
     return res.status(500).json({
       error: 'Failed to parse invoice text',
       detail: err.message,
